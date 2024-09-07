@@ -1,0 +1,74 @@
+# SPDX-FileCopyrightText: 2024 Robin Vobruba <hoijui.quaero@gmail.com>
+#
+# SPDX-License-Identifier: Unlicense
+
+name: build
+
+on:
+  push:
+    branches: [ master, main, develop ]
+  schedule:
+    # Every day at 02:21
+    - cron: "21 2 * * *"
+
+jobs:
+  update_lov_dump:
+    name: Update LOV dump repo on codeberg (potentially)
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Install required tools"
+        run: |
+          sudo apt-get install -y curl gzip
+
+      - name: "Write key to temp file"
+        run: |
+          mkdir -p "build"
+          cd "build"
+          touch "id_codeberg_org"
+          chmod 400 "id_codeberg_org"
+          printf '%s' "${{ secrets.CODEBERG_ACCESS_PRIVATE_KEY }}" > "id_codeberg_org"
+          cd ..
+
+      - name: Cache Repo
+        id: cache-repo
+        uses: actions/cache@v4
+        with:
+          path: build/lov-dump
+          key: repo
+
+      - name: "Clone the repo"
+        if: steps.cache-repo.outputs.cache-hit != 'true'
+        run: |
+          cd "build"
+          git \
+            -c core.sshCommand="ssh -i '$(pwd)/id_codeberg_org' -o IdentitiesOnly=yes" \
+            clone \
+            "git@codeberg.org:elevont/lov-dump.git" \
+            "lov-dump"
+          git -C "lov-dump" config core.sshCommand \
+            "ssh -i '$(pwd)/id_codeberg_org' -o IdentitiesOnly=yes"
+          cd ..
+
+      - name: "Update the repo"
+        if: steps.cache-repo.outputs.cache-hit == 'true'
+        run: |
+          cd "build/lov-dump"
+          git pull
+          cd ..
+
+      - name: "Download the data dump, extract and move it, and update the repo"
+        run: |
+          cd "build"
+          curl --location --quiet -O "https://lov.linkeddata.es/lov.nq.gz"
+          gunzip "lov.nq.gz"
+          mv "lov.nq" "lov-dump/"
+          cd "lov-dump"
+          git add "lov.nq"
+          git commit -m "Updated data dump"
+          cd ../..
+
+      - name: "Push changes to the remote repo"
+        run: |
+          cd "build/lov-dump"
+          git push
+          cd ../..
