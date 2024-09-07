@@ -20,14 +20,24 @@ jobs:
         run: |
           sudo apt-get install -y curl gzip
 
-      - name: "Write key to temp file"
+      - name: "Create the build directory"
         run: |
           mkdir -p "build"
-          cd "build"
-          touch "id_codeberg_org"
-          chmod 400 "id_codeberg_org"
-          printf '%s' "${{ secrets.CODEBERG_ACCESS_PRIVATE_KEY }}" > "id_codeberg_org"
-          cd ..
+
+      - name: "Write key to temp file"
+        env:
+          SSH_AUTH_SOCK: /tmp/ssh_agent.sock
+          SSH_PRIVATE_KEY: ${{secrets.CODEBERG_ACCESS_PRIVATE_KEY}}
+        run: |
+          mkdir -p /home/runner/.ssh
+          ssh-keyscan codeberg.org >> /home/runner/.ssh/known_hosts
+          touch "/home/runner/.ssh/id_codeberg_org"
+          chmod 600 "/home/runner/.ssh/id_codeberg_org"
+          echo "$SSH_PRIVATE_KEY" \
+            > "/home/runner/.ssh/id_codeberg_org"
+          chmod 400 "/home/runner/.ssh/id_codeberg_org"
+          ssh-agent -a $SSH_AUTH_SOCK > /dev/null
+          ssh-add /home/runner/.ssh/id_codeberg_org
 
       - name: Cache Repo
         id: cache-repo
@@ -38,15 +48,17 @@ jobs:
 
       - name: "Clone the repo"
         if: steps.cache-repo.outputs.cache-hit != 'true'
+        env:
+          SSH_AUTH_SOCK: /tmp/ssh_agent.sock
         run: |
           cd "build"
           git \
-            -c core.sshCommand="ssh -i '$(pwd)/id_codeberg_org' -o IdentitiesOnly=yes" \
+            -c core.sshCommand="ssh -i '/home/runner/.ssh/id_codeberg_org' -o IdentitiesOnly=yes" \
             clone \
             "git@codeberg.org:elevont/lov-dump.git" \
             "lov-dump"
           git -C "lov-dump" config core.sshCommand \
-            "ssh -i '$(pwd)/id_codeberg_org' -o IdentitiesOnly=yes"
+            "ssh -i '/home/runner/.ssh/id_codeberg_org' -o IdentitiesOnly=yes"
           cd ..
 
       - name: "Update the repo"
@@ -57,17 +69,23 @@ jobs:
           cd ..
 
       - name: "Download the data dump, extract and move it, and update the repo"
+        env:
+          SSH_AUTH_SOCK: /tmp/ssh_agent.sock
         run: |
           cd "build"
-          curl --location --quiet -O "https://lov.linkeddata.es/lov.nq.gz"
+          curl --location --silent -O "https://lov.linkeddata.es/lov.nq.gz"
           gunzip "lov.nq.gz"
           mv "lov.nq" "lov-dump/"
           cd "lov-dump"
+          git config --global user.email "actions@github.com"
+          git config --global user.name "LOV-dump-updater GitHub-actions (https://github.com/elevont/lov-dump-updater)"
           git add "lov.nq"
           git commit -m "Updated data dump"
           cd ../..
 
       - name: "Push changes to the remote repo"
+        env:
+          SSH_AUTH_SOCK: /tmp/ssh_agent.sock
         run: |
           cd "build/lov-dump"
           git push
